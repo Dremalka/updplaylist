@@ -98,13 +98,10 @@ func reloadSettings() error {
 	cf, err = ini.Load(nameIniFile)
 	if err != nil {
 		if os.IsNotExist(err) { // файл с настройками не найден?
-			cf = ini.Empty()             // создать новый объект с настройками
-			err = cf.SaveTo(nameIniFile) // сохранить файл с значениями по умолчанию
-			if err != nil {
-				return err
-			}
+			cf = ini.Empty() // создать новый объект с настройками
+		} else {
+			return err
 		}
-		return err
 	}
 
 	// обработать секцию "general" с основными настройками
@@ -146,7 +143,7 @@ func reloadSettings() error {
 	// Имя файла плейлиста и путь до него.
 	key, err = section.GetKey("pathplaylist")
 	if err != nil {
-		key, err := section.NewKey("pathplaylist", defPathPlaylist)
+		key, err = section.NewKey("pathplaylist", defPathPlaylist)
 		if err != nil {
 			return err
 		}
@@ -157,7 +154,7 @@ func reloadSettings() error {
 	// Количество параллельных потоков для парсинга сайта
 	key, err = section.GetKey("workers")
 	if err != nil {
-		key, err := section.NewKey("workers", strconv.Itoa(defWorkers))
+		key, err = section.NewKey("workers", strconv.Itoa(defWorkers))
 		if err != nil {
 			return err
 		}
@@ -181,6 +178,11 @@ func reloadSettings() error {
 	// секция содержит список каналов
 	ch := section.Keys() // получить массив списка каналов
 	cfstruct.channels = ch
+
+	err = cf.SaveTo(nameIniFile) // сохранить файл с значениями по умолчанию
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
