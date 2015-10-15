@@ -15,29 +15,32 @@ import (
 	"time"
 )
 
+// структура записи программы передач
 type progr struct {
 	channel        string
 	nameChannel    string
 	datepr         time.Time
 	timepr         time.Time
-	TimeBeginProgr string
-	NameProgr      string
-	HrefProgr      string
-	IDProgr        string
-	Day            string
-	DayOfWeek      string
-	DataProgr      time.Time
+	timeBeginProgr string
+	nameProgr      string
+	hrefProgr      string
+	idProgr        string
+	day            string
+	dayOfWeek      string
+	dataProgr      time.Time
 }
 
+// структура записи канала
 type listDay struct {
 	channel     string
 	nameChannel string
-	Day         string
-	DayOfWeek   string
-	URL         string
-	DataProgr   time.Time
+	day         string
+	dayOfWeek   string
+	url         string
+	dataProgr   time.Time
 }
 
+// настройки
 type settings struct {
 	updsetdelay  int
 	upddatadelay int
@@ -47,18 +50,18 @@ type settings struct {
 }
 
 const (
-	NAME_INI_FILE   = "updplaylist.ini"
-	DEFUPDSETDELAY  = "600"
-	DEFUPDDATADELAY = "3600"
-	DEFPATHPLAYLIST = "playlist.m3u"
+	nameIniFile     = "updplaylist.ini" // имя файла с настройками
+	defUpdSetDelay  = "600"             // периодичность с которой перечитывать файл с настройками
+	defUpdDataDelay = "3600"            // периодичность с которой обновлять плейлист
+	defPathPlaylist = "playlist.m3u"    // имя файла-плейлиста
 )
 
-var DEFWORKERS = runtime.NumCPU()
+var defWorkers = runtime.NumCPU() // количество параллельных потоков при загрузке данных с сайта www.cn.ru
 
-var cf *ini.File
-var cfstruct settings
+var cf *ini.File      // объект пакета ini с данными настройки
+var cfstruct settings // настройки программы
 var mutex = &sync.Mutex{}
-var chPr map[string][]progr
+var chPr map[string][]progr // отображение массивов с данными программы передач
 
 func main() {
 
@@ -68,24 +71,13 @@ func main() {
 	var err error
 	err = reloadSettings()
 	if err != nil {
-		if os.IsNotExist(err) {
-			cf = ini.Empty()
-			err = setDefaultSettings()
-			if err != nil {
-				panic(err)
-			}
-			err = cf.SaveTo(NAME_INI_FILE)
-			if err != nil {
-				panic(err)
-			}
-		} else {
-			panic(err)
-		}
+		log.Panicln("Ошибка при загрузке файла с настройками:", err)
 	}
 
-	go updSettings()
-	go updProgr()
+	go updSettings() // горутина периодически перечитывает настройки
+	go updProgr()    // горутина периодически собирает данные с сайта и обновляет плейлист
 
+	// для выхода из программы ждать нажатия кнопки
 	var response string
 	fmt.Println("Press Enter")
 	_, _ = fmt.Scanln(&response)
@@ -93,454 +85,287 @@ func main() {
 
 }
 
+// reload считывает данные с ini-файла и загружает в структуру. При необходимости инициализирует данные значениями по умолчанию
 func reloadSettings() error {
-	var value *ini.Key
+	var key *ini.Key
 	var err error
+	var value int
 
-	cf, err = ini.Load(NAME_INI_FILE)
+	defUpdSetDelayInt, _ := strconv.Atoi(defUpdSetDelay)
+	defUpdDataDelayInt, _ := strconv.Atoi(defUpdDataDelay)
+
+	// открыть ini-файл
+	cf, err = ini.Load(nameIniFile)
 	if err != nil {
+		if os.IsNotExist(err) { // файл с настройками не найден?
+			cf = ini.Empty()             // создать новый объект с настройками
+			err = cf.SaveTo(nameIniFile) // сохранить файл с значениями по умолчанию
+			if err != nil {
+				return err
+			}
+		}
 		return err
 	}
 
+	// обработать секцию "general" с основными настройками
 	section, err := cf.GetSection("general")
 	if err != nil {
-		section, err = cf.NewSection("general")
+		section, err = cf.NewSection("general") // секции нет в ini-файле? Тогда создать.
 		if err != nil {
-			return err
+			return err // если не удалось создать, то продолжать бессмысленно
 		}
 		section.Comment = "Основные настройки"
 	}
 
 	// перечитывать настройки каждые .... сек
-	value, err = section.GetKey("updsetdelay")
+	key, err = section.GetKey("updsetdelay")
 	if err != nil {
-		key, err := section.NewKey("updsetdelay", DEFUPDSETDELAY)
+		key, err = section.NewKey("updsetdelay", defUpdSetDelay)
 		if err != nil {
 			return err
 		}
 		key.Comment = "Перечитывать настройки каждые ... сек."
-		cfstruct.updsetdelay, _ = strconv.Atoi(DEFUPDSETDELAY)
 	}
-	cfstruct.updsetdelay, err = value.Int()
-	if err != nil {
-		return err
-	}
+	value = key.RangeInt(defUpdSetDelayInt, 5, 1000000) // значение в пределах 5 - 1000000 секунд. При ошибке инициализация значением по умолчанию
+	key.SetValue(strconv.Itoa(value))
+	cfstruct.updsetdelay = value
 
 	// обновлять данные плейлиста каждые .... сек
-	value, err = section.GetKey("upddatadelay")
+	key, err = section.GetKey("upddatadelay")
 	if err != nil {
-		key, err := section.NewKey("upddatadelay", DEFUPDDATADELAY)
+		key, err = section.NewKey("upddatadelay", defUpdDataDelay)
 		if err != nil {
 			return err
 		}
 		key.Comment = "Обновлять данные плейлиста каждые ... сек."
-		cfstruct.upddatadelay, _ = strconv.Atoi(DEFUPDDATADELAY)
 	}
-	cfstruct.upddatadelay, err = value.Int()
-	if err != nil {
-		return err
-	}
+	value = key.RangeInt(defUpdDataDelayInt, 300, 1000000) // значение в пределах 300 - 1000000 секунд. При ошибке инициализация значением по умолчанию
+	key.SetValue(strconv.Itoa(value))
+	cfstruct.upddatadelay = value
 
 	// Имя файла плейлиста и путь до него.
-	value, err = section.GetKey("pathplaylist")
+	key, err = section.GetKey("pathplaylist")
 	if err != nil {
-		key, err := section.NewKey("pathplaylist", DEFPATHPLAYLIST)
+		key, err := section.NewKey("pathplaylist", defPathPlaylist)
 		if err != nil {
 			return err
 		}
 		key.Comment = "Имя файла плейлиста и путь до него."
-		cfstruct.pathplaylist = DEFPATHPLAYLIST
 	}
-	cfstruct.pathplaylist = value.String()
-	if err != nil {
-		return err
-	}
+	cfstruct.pathplaylist = key.String()
 
 	// Количество параллельных потоков для парсинга сайта
-	value, err = section.GetKey("workers")
+	key, err = section.GetKey("workers")
 	if err != nil {
-		key, err := section.NewKey("workers", strconv.Itoa(DEFWORKERS))
+		key, err := section.NewKey("workers", strconv.Itoa(defWorkers))
 		if err != nil {
 			return err
 		}
 		key.Comment = "Количество параллельных потоков для парсинга сайта. По умолчанию равен кол-ву ядер процессора."
-		cfstruct.workers = DEFWORKERS
-	}
-	cfstruct.workers, err = value.Int()
-	if err != nil {
-		return err
-	}
 
-	// каналы
+	}
+	value = key.RangeInt(defWorkers, 1, 100) // значение в пределах 1 - 100 отдельных потоков. При ошибке инициализация значением по умолчанию
+	key.SetValue(strconv.Itoa(value))
+	cfstruct.workers = value
+
+	// секция "каналы"
 	section, err = cf.GetSection("channels")
 	if err != nil {
-		section, err = cf.NewSection("channels")
+		section, err = cf.NewSection("channels") // секции нет в ini-файле? Создать секцию.
 		if err != nil {
 			return err
 		}
 	}
-	ch := section.Keys()
+	section.Comment = "Список каналов. Пример строки: -:rossija"
+
+	// секция содержит список каналов
+	ch := section.Keys() // получить массив списка каналов
 	cfstruct.channels = ch
 
 	return nil
 }
 
-func setDefaultSettings() error {
-	section, err := cf.NewSection("general")
-	if err != nil {
-		return err
-	}
-	section.Comment = "Основные настройки"
-
-	key, err := section.NewKey("updsetdelay", DEFUPDSETDELAY)
-	if err != nil {
-		return err
-	}
-	key.Comment = "Перечитывать настройки каждые ... сек."
-
-	key, err = section.NewKey("upddatadelay", DEFUPDDATADELAY)
-	if err != nil {
-		return err
-	}
-	key.Comment = "Обновлять данные плейлиста каждые ... сек."
-
-	key, err = section.NewKey("pathplaylist", DEFPATHPLAYLIST)
-	if err != nil {
-		return err
-	}
-	key.Comment = "Имя файла плейлиста и путь до него."
-
-	key, err = section.NewKey("workers", strconv.Itoa(DEFWORKERS))
-	if err != nil {
-		return err
-	}
-	key.Comment = "Количество параллельных потоков для парсинга сайта. По умолчанию равен кол-ву ядер процессора."
-
-	section, err = cf.NewSection("channels")
-	if err != nil {
-		return err
-	}
-	section.Comment = "Список каналов. Пример строки: -:rossija"
-
-	return nil
-}
-
+// updSettings с заданной перидочностью из ini-файла обновляет настройки
 func updSettings() {
 	for {
 		mutex.Lock()
 		err := reloadSettings()
-		mutex.Unlock()
 		if err != nil {
-			fmt.Println(err)
+			log.Panicln("Ошибка при загрузке файла с настройками:", err)
 		}
-		fmt.Println("Обновление настроек")
+		mutex.Unlock()
+		log.Println("Настройки обновлены")
 		time.Sleep(time.Duration(cfstruct.updsetdelay) * time.Second)
 	}
 }
 
+// updProgr с заданной периодичностью обновляет плейлист
 func updProgr() {
 	for {
-		fmt.Println("Обновление каналов")
+		log.Println("Обновляется плейлист")
 		mutex.Lock()
 
-		channelInCollectDataProgr := make(chan progr, 50)
-		channelDoneCollectDataProgr := make(chan struct{})
-		done := make(chan struct{})
-		go collectDataProgr(channelInCollectDataProgr, channelDoneCollectDataProgr, done)
+		channelInCollectDataProgr := make(chan progr, 200) // канал по которому пул горутин передает сборщику записи с данными по каждой программе передач
+		channelDoneCollectDataProgr := make(chan struct{}) // канал по которому каждая горутина сообщают сборщику о прекращении обработки данных и закрытии
+		done := make(chan struct{})                        // канал по которому сборщик данных сообщает текущей функции о том, что все данные собраны
 
-		listURL := getListURL(cfstruct.channels)
+		go collectDataProgr(channelInCollectDataProgr, channelDoneCollectDataProgr, done) // запустить сборщик данных
 
-		chURL := make(chan listDay)
-		for i := 0; i < cfstruct.workers; i++ {
+		listURL := getListURL(cfstruct.channels) // получить массив с данными (включая ссылку на страницу) для каждого дня заданных каналов
+
+		chURL := make(chan listDay)             // канал по которому пулу горутин передается структура с данными (включая ссылку на страницу) каждого дня канала
+		for i := 0; i < cfstruct.workers; i++ { // создать пул горутин
 			go getProgr(chURL, channelInCollectDataProgr, channelDoneCollectDataProgr)
 		}
 
 		for _, rec := range listURL {
-			chURL <- rec
+			chURL <- rec // передать горутинам все ссылки (для каждого канала, каждый день)
 		}
-		close(chURL)
-		<-done
+		close(chURL) // за ненадобностью закрыть канал
+		<-done       // и ждать завершения работы сборщика
 
-		close(channelInCollectDataProgr)
+		close(channelInCollectDataProgr) // закрыть все созданные каналы
 		close(channelDoneCollectDataProgr)
 		close(done)
 
-		// сортировать массив с данными
-		//		channel := func(c1, c2 *progr) bool {
-		//			return c1.channel < c2.channel
-		//		}
-		DataProg := func(c1, c2 *progr) bool {
-			return c1.DataProgr.After(c2.DataProgr)
+		// настроить условия сортировки массива с основными данными и рассортировать подготовленные данные
+		dataProg := func(c1, c2 *progr) bool { // дни программы передач сортировать по убыванию (... 5, 4, 3, 2,..,)
+			return c1.dataProgr.After(c2.dataProgr)
 		}
 
-		datepr := func(c1, c2 *progr) bool {
+		datepr := func(c1, c2 *progr) bool { // дни внутри одного дня программы передач сортировать по возрастанию. Бывает, что в программе передач передачи заканчиваются ночью следующего дня
 			return c1.datepr.Before(c2.datepr)
 		}
 
-		timepr := func(c1, c2 *progr) bool {
+		timepr := func(c1, c2 *progr) bool { // время внутри одного дня программы передач сортировать возрастанию.
 			return c1.timepr.Before(c2.timepr)
 		}
 
-		for key, vol := range chPr {
-			OrderBy(DataProg, datepr, timepr).Sort(vol)
+		for key, vol := range chPr { // каждый массив программ передач канала
+			orderBy(dataProg, datepr, timepr).Sort(vol) // рассортировать понастроенным выше правилам
 			chPr[key] = vol
 		}
 
-		//		for _, vol := range chPr {
-		//			for _, vol1 := range vol {
-		//				fmt.Println(vol1.channel, vol1.date, vol1.time, vol1.TimeBeginProgr, vol1.NameProgr, vol1.IDProgr, vol1.HrefProgr)
-		//			}
-		//		}
-
-		// обновить файл playlist
-		linesText, err := readLines(cfstruct.pathplaylist)
+		// обработка плейлиста
+		linesText, err := readLines(cfstruct.pathplaylist) // прочитать плейлист
 		if err != nil {
-			fmt.Println(err, linesText)
-			return
-		}
-		linesText, err = checkLines(linesText)
+			log.Println("Ошибка при открытии и считывании плейлиста:", err)
+		} else {
+			linesText, err = checkLines(linesText) // удалить старые данные между строками-якорями. Создать новые строки-якори для новых каналов (#archive-begin-rossija, #archive-end,...)
+			if err != nil {
+				log.Println("Ошибка при подготовке плейлиста к обновлению:", err)
+			} else {
+				// обойти все строки плейлиста. При получении строки-якоря заполнить новыми данными
+				var newlinesText []string
+			loop:
+				for _, str := range linesText {
+					newlinesText = append(newlinesText, str)      // обычные строки плейлиста. Не обрабатываются.
+					if strings.HasPrefix(str, "#archive-begin") { // строка-якорь начала данных определенного канала
+						strSplit := strings.Split(str, "-")
+						if len(strSplit) != 3 {
+							log.Printf("Ошибка в строке: %s. Правильный пример: #archive-begin-rossija\n", str)
+							continue loop
+						}
+						ch := strSplit[2] // получить название канала
+						flag := true
+						for _, vol := range chPr[ch] { // найти в отображении массив данных заданного канала
+							var serviceInf string
+							if flag { // в первой строке нужно задать имя группы
+								serviceInf = `aspect-ratio=4:3 group-title="` + vol.nameChannel + ` (архив)",`
+								flag = false
+							} else {
+								serviceInf = "aspect-ratio=4:3,"
+							}
 
-		//fmt.Println(linesText)
+							// сформировать две строки в формате m3u
+							firststr := "#EXTINF:-1 " + serviceInf + vol.day + " " + vol.dayOfWeek + " " + vol.timeBeginProgr + ` "` + vol.nameProgr + `"`
+							newlinesText = append(newlinesText, firststr)
 
-		//		for key, vol := range chPr {
-		//			fmt.Println(key)
-		//			for _, vol := range vol {
-		//				fmt.Println(vol)
-		//			}
-		//		}
-
-		newlinesText := make([]string, 0)
-		for _, str := range linesText {
-			newlinesText = append(newlinesText, str)
-			if strings.HasPrefix(str, "#archive-begin") {
-				strSplit := strings.Split(str, "-")
-				ch := strSplit[len(strSplit)-1]
-				flag := true
-				for _, vol := range chPr[ch] {
-					var serviceInf string
-					if flag {
-						serviceInf = `aspect-ratio=4:3 group-title="` + vol.nameChannel + ` (архив)",`
-						flag = false
-					} else {
-						serviceInf = "aspect-ratio=4:3,"
+							secondstr := "http://hls.peers.tv/playlist/program/" + vol.idProgr + ".m3u8"
+							newlinesText = append(newlinesText, secondstr)
+						}
 					}
-					firststr := "#EXTINF:-1 " + serviceInf + vol.Day + " " + vol.DayOfWeek + " " + vol.TimeBeginProgr + ` "` + vol.NameProgr + `"`
-					newlinesText = append(newlinesText, firststr)
-
-					secondstr := "http://hls.peers.tv/playlist/program/" + vol.IDProgr + ".m3u8"
-					newlinesText = append(newlinesText, secondstr)
 				}
+				linesText = newlinesText
+
+				// записать обновленный плейлист в файл
+				err := writeLines(linesText, cfstruct.pathplaylist)
+				if err != nil {
+					log.Printf("Ошибка при записи новых данных в файл %s.\n", cfstruct.pathplaylist)
+				}
+
 			}
 		}
-		linesText = newlinesText
-
-		//		for _, str := range linesText {
-		//			fmt.Println(str)
-		//		}
-
-		//	for ind := 0; ind < len(linesText); ind++ {
-		//		if linesText[ind] == ("#archive-"+chname+"-begin") && linesText[ind+1] != ("#archive-"+chname+"-end") {
-		//			splString := strings.SplitAfter(linesText[ind+1], "aspect-ratio=4:3")
-		//			linesText[ind+1] = splString[0] + ` group-title="Россия 1 (архив)"` + splString[1]
-		//		}
-		//	}
-		//
-		//	//	for _, line := range linesText {
-		//	//		fmt.Println(line)
-		//	//	}
-		//
-		if err := writeLines(linesText, cfstruct.pathplaylist); err != nil {
-			log.Fatalf("writeLines: %s", err)
-		}
-
-		//
-		//		var thisChName string
-		//		for _, vol := range listProgr {
-		//			if vol.channel != thisChName {
-		//				var indBeginChannek, indEndChannel int
-		//				for _, vol := range linesText {
-		//					switch vol {
-		//					case :
-		//
-		//					}
-		//				}
-		//			}
-		//		}
-		//
-		//
-		//			var newLinesText []string
-		//			strFound := false
-		//			for _, line := range linesText {
-		//				if strFound == false || line == ("#archive-"+chname+"-end") {
-		//					newLinesText = append(newLinesText, line)
-		//				}
-		//				if line == ("#archive-" + chname + "-begin") {
-		//					strFound = true
-		//				}
-		//				if line == ("#archive-" + chname + "-end") {
-		//					strFound = false
-		//				}
-		//			}
-		//			linesText = newLinesText
-		//
-		//			for _, thisDay := range listDays {
-		//
-		//				var newLinesText []string
-		//				for _, line := range linesText {
-		//					newLinesText = append(newLinesText, line)
-		//					//fmt.Println(line, string("#archive-"+chname+"-begin"))
-		//					if line == string("#archive-"+chname+"-begin") {
-		//						//fmt.Println("11111", line)
-		//						for _, strProgr := range listProgr {
-		//							firststr := "#EXTINF:-1 aspect-ratio=4:3," + `"` + thisDay.Day + " " + thisDay.DayOfWeek + " " + strProgr.TimeBeginProgr + " " + strProgr.NameProgr + `"`
-		//							newLinesText = append(newLinesText, firststr)
-		//
-		//							secondstr := "http://hls.peers.tv/playlist/program/" + strProgr.IDProgr + ".m3u8"
-		//							newLinesText = append(newLinesText, secondstr)
-		//						}
-		//					}
-		//
-		//				}
-		//				linesText = newLinesText
-		//			}
-		//
-
-		fmt.Println("Выполнено!")
-
-		//		for _, chkey := range cfstruct.channels {
-		//			namechannel := chkey.Value()
-		//			err := getProgr(namechannel)
-		//			if err != nil {
-		//				fmt.Println(err)
-		//			}
-		//		}
-		//
-		//		channelDoneCollectDataProgr <- struct{}
 		mutex.Unlock()
+		log.Println("Обновление плейлиста завершено")
 
 		time.Sleep(time.Duration(cfstruct.upddatadelay) * time.Second)
 	}
 }
 
+// collectDataProg сборщик собирает из канала записи и складывает в массив
 func collectDataProgr(in <-chan progr, done <-chan struct{}, genDone chan<- struct{}) {
-	chPr = make(map[string][]progr)
-	workers := cfstruct.workers
+	chPr = make(map[string][]progr) // отображение. В качестве ключа - название канала. Значение - массив с данными по каналу
+	workers := cfstruct.workers     // количество горутин. По количеству определяется момент, когда необходимо завершить работу.
 loop:
 	for {
 		select {
-		case recpr := <-in:
-			chPr[recpr.channel] = append(chPr[recpr.channel], recpr)
+		case recpr := <-in: // полученную запись из канала
+			chPr[recpr.channel] = append(chPr[recpr.channel], recpr) // сохранить в массив
 
-		case <-done:
+		case <-done: // горутина вернула сигнал о завершении работы
 			workers--
-			if workers <= 0 {
-				//				for _, vol := range listProgr {
-				//					fmt.Println(vol.channel, vol.date, vol.time, vol.TimeBeginProgr, vol.NameProgr, vol.IDProgr, vol.HrefProgr)
-				//				}
-				break loop
+			if workers <= 0 { // как только все горутины вернут сигнал о завершении
+				break loop // прервать цикл
 			}
 		}
 	}
-	genDone <- struct{}{}
+	genDone <- struct{}{} // отправить сигнал о завершении вызываемой функции
 	return
 }
 
+// getProg по каждому дню получает массив данных программы передач. Собранные данные отправляет по каналу сборщику. URL страницы получает из канала
 func getProgr(in <-chan listDay, out chan<- progr, done chan<- struct{}) {
 
-	for thisDay := range in {
-		listProgr, err := getListProgr(thisDay.URL)
+loop:
+	for thisDay := range in { // получить очередной URL страницы
+		listProgr, err := getListProgr(thisDay.url) // URL передать функции. Обратно получить массив с данными.
 		if err != nil {
-			fmt.Println(err)
+			log.Printf("Ошибка при получении данных программы передач. Канал = %s, URL=%s\n", thisDay.channel, thisDay.url)
+			continue loop
 		}
-		for _, vol := range listProgr {
+		for _, vol := range listProgr { // каждую запись программы сформировать отдельно
 			progr := progr{}
 			progr.channel = thisDay.channel
 			progr.nameChannel = thisDay.nameChannel
 			progr.datepr = vol.datepr
 			progr.timepr = vol.timepr
-			progr.TimeBeginProgr = vol.TimeBeginProgr
-			progr.IDProgr = vol.IDProgr
-			progr.NameProgr = vol.NameProgr
-			progr.HrefProgr = vol.HrefProgr
-			progr.Day = thisDay.Day
-			progr.DayOfWeek = thisDay.DayOfWeek
-			progr.DataProgr = thisDay.DataProgr
-			out <- progr
+			progr.timeBeginProgr = vol.timeBeginProgr
+			progr.idProgr = vol.idProgr
+			progr.nameProgr = vol.nameProgr
+			progr.hrefProgr = vol.hrefProgr
+			progr.day = thisDay.day
+			progr.dayOfWeek = thisDay.dayOfWeek
+			progr.dataProgr = thisDay.dataProgr
+			out <- progr // и отправить сборщику
 		}
 
 	}
 	done <- struct{}{}
 
-	//	linesText, err := readLines(cfstruct.pathplaylist)
-	//	if err != nil {
-	//		fmt.Println(err)
-	//		return err
-	//	}
-	//
-	//	var newLinesText []string
-	//	strFound := false
-	//	for _, line := range linesText {
-	//		if strFound == false || line == ("#archive-"+chname+"-end") {
-	//			newLinesText = append(newLinesText, line)
-	//		}
-	//		if line == ("#archive-" + chname + "-begin") {
-	//			strFound = true
-	//		}
-	//		if line == ("#archive-" + chname + "-end") {
-	//			strFound = false
-	//		}
-	//	}
-	//	linesText = newLinesText
-	//
-	//	for _, thisDay := range listDays {
-
-	//	var newLinesText []string
-	//	for _, line := range linesText {
-	//		newLinesText = append(newLinesText, line)
-	//		//fmt.Println(line, string("#archive-"+chname+"-begin"))
-	//		if line == string("#archive-"+chname+"-begin") {
-	//			//fmt.Println("11111", line)
-	//			for _, strProgr := range listProgr {
-	//				firststr := "#EXTINF:-1 aspect-ratio=4:3," + `"` + thisDay.Day + " " + thisDay.DayOfWeek + " " + strProgr.TimeBeginProgr + " " + strProgr.NameProgr + `"`
-	//				newLinesText = append(newLinesText, firststr)
-	//
-	//				secondstr := "http://hls.peers.tv/playlist/program/" + strProgr.IDProgr + ".m3u8"
-	//				newLinesText = append(newLinesText, secondstr)
-	//			}
-	//		}
-	//
-	//	}
-	//	linesText = newLinesText
-	//
-
-	//fmt.Println(url, listProgr)
-	//break
-	//	}
-	//
-	//	for ind := 0; ind < len(linesText); ind++ {
-	//		if linesText[ind] == ("#archive-"+chname+"-begin") && linesText[ind+1] != ("#archive-"+chname+"-end") {
-	//			splString := strings.SplitAfter(linesText[ind+1], "aspect-ratio=4:3")
-	//			linesText[ind+1] = splString[0] + ` group-title="Россия 1 (архив)"` + splString[1]
-	//		}
-	//	}
-	//
-	//	//	for _, line := range linesText {
-	//	//		fmt.Println(line)
-	//	//	}
-	//
-	//	if err := writeLines(linesText, cfstruct.pathplaylist); err != nil {
-	//		log.Fatalf("writeLines: %s", err)
-	//	}
 	return
 }
 
+// getListUrl парсит основную страницу канала. Получает ссылки на каждый день программы передач.
 func getListURL(channelsKeys []*ini.Key) []listDay {
 	var list []listDay
+loop:
 	for _, channelKey := range channelsKeys {
 		channel := channelKey.Value()
 		doc, err := goquery.NewDocument("http://www.cn.ru/tv/program/" + channel + "/")
 		if err != nil {
-			log.Fatal(err)
+			log.Printf("Ошибка при получении ссылок на каждый день программы передач. Канал = %s.\n", channel)
+			continue loop
 		}
 
 		nameChannel := doc.Find("#cn-ru #master.cn-master #cnbody.cnbody #graycontainer #container.no-padding.scnt .tv-inner-content h2.prg-channel span").Text()
@@ -550,11 +375,11 @@ func getListURL(channelsKeys []*ini.Key) []listDay {
 				thisDay := listDay{}
 				thisDay.nameChannel = nameChannel
 				articleURLSplit := strings.Split(articleURL, "/")
-				thisDay.DataProgr, _ = time.Parse("2006-01-02", articleURLSplit[len(articleURLSplit)-2])
+				thisDay.dataProgr, _ = time.Parse("2006-01-02", articleURLSplit[len(articleURLSplit)-2])
 				thisDay.channel = channel
-				thisDay.URL = articleURL
-				thisDay.Day = s.Find("strong").Text()
-				thisDay.DayOfWeek = s.Find("small").Text()
+				thisDay.url = articleURL
+				thisDay.day = s.Find("strong").Text()
+				thisDay.dayOfWeek = s.Find("small").Text()
 				list = append(list, thisDay)
 			}
 		})
@@ -563,17 +388,16 @@ func getListURL(channelsKeys []*ini.Key) []listDay {
 	return list
 }
 
+// getListProgr запрашивает html-страницу. Парсит и собирает данные по программам в массив
 func getListProgr(url string) ([]progr, error) {
 	var listProgr []progr
 	sourceURL := "http://www.cn.ru" + url
-	fmt.Println(sourceURL)
-
 	doc, err := goquery.NewDocument(sourceURL)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Ошибка при получении html-страницы. URL = %s\n", url)
+		return nil, err
 	}
 	doc.Find("#cn-ru #master.cn-master #cnbody.cnbody #graycontainer #container.no-padding.scnt .tv-inner-content #mtvprg-program.prg-list ol li").Each(func(i int, s *goquery.Selection) {
-		//fmt.Println(s.Html())
 		s.Find(".tlcbar.is-able").Each(func(i int, s *goquery.Selection) {
 			strProgr := progr{}
 			timeBeginProgr := s.Find("ins").Text()
@@ -594,10 +418,10 @@ func getListProgr(url string) ([]progr, error) {
 			//fmt.Println(timeBeginProgr)
 			strProgr.datepr = datePr
 			strProgr.timepr = dateTime
-			strProgr.TimeBeginProgr = timeBeginProgr
-			strProgr.NameProgr = nameProgr
-			strProgr.HrefProgr = hrefProgr
-			strProgr.IDProgr = id
+			strProgr.timeBeginProgr = timeBeginProgr
+			strProgr.nameProgr = nameProgr
+			strProgr.hrefProgr = hrefProgr
+			strProgr.idProgr = id
 			listProgr = append(listProgr, strProgr)
 		})
 	})
@@ -605,10 +429,10 @@ func getListProgr(url string) ([]progr, error) {
 	return listProgr, nil
 }
 
+// readLines считывает из текстового файла в строковый массив
 func readLines(path string) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-
 		return nil, err
 	}
 	defer file.Close()
@@ -621,25 +445,32 @@ func readLines(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
+// checkLines удаляет из массив старые данные. Расставляет якорные строки.
 func checkLines(lines []string) ([]string, error) {
 	var foundBegin bool
 	var newlines []string
 	var listch []string
+
 	for _, key := range cfstruct.channels {
 		listch = append(listch, key.Value())
 	}
 
+loop_1:
 	for _, str := range lines {
 		if strings.HasPrefix(str, "#archive-end") {
 			foundBegin = false
 		}
 		if strings.HasPrefix(str, "#archive-begin") && !foundBegin {
 			strSplit := strings.Split(str, "-")
-			channel := strSplit[len(strSplit)-1]
+			if len(strSplit) != 3 {
+				log.Printf("Ошибка в строке: %s. Правильный пример: #archive-begin-rossija\n", str)
+				continue loop_1
+			}
+			channel := strSplit[2]
 		loop:
 			for i, vol := range listch {
 				if vol == channel {
-					newlistch := make([]string, 0)
+					var newlistch []string
 					newlistch = append(newlistch, listch[:i]...)
 					newlistch = append(newlistch, listch[i+1:]...)
 					listch = newlistch
@@ -652,6 +483,8 @@ func checkLines(lines []string) ([]string, error) {
 			newlines = append(newlines, str)
 		}
 	}
+
+	// если в плейлисте нет строк-якорей для каналов, то создать их в конце файла
 	for _, vol := range listch {
 		newlines = append(newlines, "#archive-begin-"+vol)
 		newlines = append(newlines, "#archive-end")
@@ -659,6 +492,7 @@ func checkLines(lines []string) ([]string, error) {
 	return newlines, nil
 }
 
+// writeLines записывает обработанный плейлист в файл
 func writeLines(lines []string, path string) error {
 	file, err := os.Create(path)
 	if err != nil {
@@ -673,8 +507,8 @@ func writeLines(lines []string, path string) error {
 	return w.Flush()
 }
 
+// сортировка массива структур по полям структуры
 type lessFunc func(p1, p2 *progr) bool
-
 type multiSorter struct {
 	bs   []progr
 	less []lessFunc
@@ -685,7 +519,7 @@ func (ms *multiSorter) Sort(bs []progr) {
 	sort.Sort(ms)
 }
 
-func OrderBy(less ...lessFunc) *multiSorter {
+func orderBy(less ...lessFunc) *multiSorter {
 	return &multiSorter{
 		less: less,
 	}
