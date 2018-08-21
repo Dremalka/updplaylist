@@ -6,6 +6,8 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/go-ini/ini"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"sort"
@@ -64,6 +66,10 @@ var mutex = &sync.Mutex{}
 var chPr map[string][]progr // отображение массивов с данными программы передач
 
 func main() {
+
+	go func() {
+		log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
+	}()
 
 	cfstruct = settings{}
 
@@ -273,10 +279,10 @@ func updProgr() {
 						for _, vol := range chPr[ch] { // найти в отображении массив данных заданного канала
 							var serviceInf string
 							if flag { // в первой строке нужно задать имя группы
-								serviceInf = `aspect-ratio=4:3 group-title="` + vol.nameChannel + ` (архив)",`
+								serviceInf = `crop=1920x1080+0+0 aspect-ratio=16:9 group-title="` + vol.nameChannel + ` (архив)",`
 								flag = false
 							} else {
-								serviceInf = "aspect-ratio=4:3,"
+								serviceInf = "crop=1920x1080+0+0 aspect-ratio=16:9,"
 							}
 
 							// сформировать две строки в формате m3u
@@ -394,6 +400,7 @@ loop:
 func getListProgr(url string) ([]progr, error) {
 	var listProgr []progr
 	sourceURL := "http://www.cn.ru" + url
+
 	doc, err := goquery.NewDocument(sourceURL)
 	if err != nil {
 		log.Printf("Ошибка при получении html-страницы. URL = %s\n", url)
